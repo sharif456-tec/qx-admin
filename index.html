@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MONEY IS EVERYTHING — Cloud Admin v3</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#0b0e14;color:#e6edf3;font:14px Arial,sans-serif}
+header{padding:16px 20px;border-bottom:1px solid #30363d;display:flex;justify-content:space-between;align-items:center;gap:12px;position:sticky;top:0;background:#0b0e14;z-index:2}
+h1{font-size:20px;margin:0}.tag{font-size:11px;color:#8b949e;margin-top:4px}
+main{padding:16px;max-width:1280px;margin:auto}.grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+.card{background:#111722;border:1px solid #30363d;border-radius:10px;padding:14px}.num{font-size:24px;font-weight:800;margin-top:6px}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}.tab{background:#21262d;color:#fff;border:0;padding:9px 12px;border-radius:7px;cursor:pointer}.tab.active{background:#238636}
+.panel{background:#111722;border:1px solid #30363d;border-radius:10px;padding:14px;overflow:auto}
+table{width:100%;border-collapse:collapse;min-width:760px}th,td{text-align:left;padding:9px;border-bottom:1px solid #30363d;font-size:12px}
+button.action{border:0;border-radius:6px;padding:6px 9px;margin:2px;cursor:pointer;background:#238636;color:#fff}
+button.gray{background:#30363d}button.reject{background:#da3633}.status{padding:4px 7px;border-radius:12px;font-size:11px;background:#30363d}.ok{color:#3fb950}.warn{color:#d29922}.bad{color:#f85149}
+.login{max-width:380px;margin:80px auto;padding:22px;background:#111722;border:1px solid #30363d;border-radius:12px}
+input{width:100%;padding:11px;margin:6px 0;background:#0d1117;color:#fff;border:1px solid #30363d;border-radius:7px}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.toolbar input{width:auto;min-width:150px;margin:0}.muted{color:#8b949e}.notice{padding:10px;border:1px solid #30363d;border-radius:8px;margin-bottom:12px}
+@media(max-width:950px){.grid{grid-template-columns:repeat(3,1fr)}}@media(max-width:600px){.grid{grid-template-columns:repeat(2,1fr)}header{align-items:flex-start}.num{font-size:20px}}
+
+.diagnostic{margin:12px 0;padding:12px;background:#0d1117;border:1px solid #30363d;border-radius:10px}
+.diagnostic h3{margin:0 0 8px;font-size:15px}
+.diag-summary{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.diag-pill{padding:5px 8px;border-radius:8px;background:#21262d;font-size:11px}
+.diag-log{max-height:360px;overflow:auto;font:12px/1.45 monospace;white-space:pre-wrap}
+.diag-row{padding:8px;border-bottom:1px solid #21262d}
+.diag-ok{color:#3fb950}.diag-warn{color:#d29922}.diag-bad{color:#f85149}
+.diag-copy{float:right;background:#30363d;color:#fff;border:0;border-radius:5px;padding:3px 7px;cursor:pointer}
+</style></head>
+<body><div id="app"></div>
+<script>
+/*
+ Cloudflare Pages + Supabase
+ Supabase project/table verified from the supplied extension:
+ URL: timxqulcmqnynhqniwhr.supabase.co
+ Table: public.candles
+ Key: publishable key only (safe for browser use when RLS is configured)
+ NEVER put a Supabase service-role/secret key in this file.
+*/
+const SUPABASE_URL="https://timxqulcmqnynhqniwhr.supabase.co";
+const SUPABASE_KEY="sb_publishable_-5KdCFbWDJQQUxetnRYBIg_sHXh0Z20";
+const CANDLE_TABLE="candles";
+let session=null, lastPair="";
+let isAdmin=false;
+let diagEntries=[];
+function diag(level,step,message,extra){
+  const item={time:new Date().toISOString(),level,step,message,extra:extra??""};
+  diagEntries.push(item);
+  if(diagEntries.length>100) diagEntries.shift();
+  renderDiagnostics();
+  console.log("[QX LOGIN]",item);
+}
+function renderDiagnostics(){
+  const el=document.querySelector("#diagnosticLog");
+  const sum=document.querySelector("#diagSummary");
+  if(!el)return;
+  const bad=diagEntries.filter(x=>x.level==="ERROR").length;
+  const warn=diagEntries.filter(x=>x.level==="WARN").length;
+  const ok=diagEntries.filter(x=>x.level==="OK").length;
+  if(sum)sum.innerHTML=`<span class="diag-pill diag-ok">OK ${ok}</span><span class="diag-pill diag-warn">WARN ${warn}</span><span class="diag-pill diag-bad">ERROR ${bad}</span>`;
+  el.innerHTML=diagEntries.map((x,i)=>{
+    const cls=x.level==="ERROR"?"diag-bad":x.level==="WARN"?"diag-warn":"diag-ok";
+    const detail=x.extra?`\n${esc(typeof x.extra==="string"?x.extra:JSON.stringify(x.extra,null,2))}`:"";
+    return `<div class="diag-row"><b class="${cls}">[${esc(x.level)}]</b> ${esc(x.step)} — ${esc(x.message)}${detail}<button class="diag-copy" onclick="copyDiag(${i})">Copy</button></div>`;
+  }).join("");
+}
+async function copyDiag(i){
+  const x=diagEntries[i]; if(!x)return;
+  await navigator.clipboard?.writeText(JSON.stringify(x,null,2));
+}
+function clearDiagnostics(){diagEntries=[];renderDiagnostics();}
+async function diagnosticFetch(url,opt={},label="request"){
+  const started=Date.now();
+  diag("OK",label,"Request started",{url,method:opt.method||"GET"});
+  try{
+    const r=await fetch(url,opt);
+    const raw=await r.text();
+    let data; try{data=raw?JSON.parse(raw):{};}catch{data={raw};}
+    const safeHeaders={};
+    ["content-type","content-range","x-request-id","sb-gateway-version"].forEach(k=>{
+      const v=r.headers.get(k); if(v)safeHeaders[k]=v;
+    });
+    const info={status:r.status,statusText:r.statusText,headers:safeHeaders,response:data,duration_ms:Date.now()-started};
+    if(!r.ok)diag("ERROR",label,`HTTP ${r.status}: ${data?.message||data?.error_description||data?.error||"Request failed"}`,info);
+    else diag("OK",label,`HTTP ${r.status}`,info);
+    return {r,data,raw};
+  }catch(e){
+    diag("ERROR",label,"Network/fetch error",{message:e?.message||String(e),duration_ms:Date.now()-started});
+    throw e;
+  }
+}
+
+function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+async function api(path,opt={}){
+  const headers={apikey:SUPABASE_KEY,Authorization:"Bearer "+(session?.access_token||SUPABASE_KEY),...opt.headers};
+  if(opt.body) headers["Content-Type"]="application/json";
+  const r=await fetch(SUPABASE_URL+path,{...opt,headers});
+  const t=await r.text(); let d; try{d=JSON.parse(t)}catch{d=t}
+  if(!r.ok) throw Error(d?.message||d?.error_description||`HTTP ${r.status}`);
+  return d;
+}
+async function checkFirstAdmin(){
+  // Do not query admin_users anonymously. RLS intentionally blocks anonymous reads.
+  // Admin status is checked only after Supabase login using the user's access token.
+  return null;
+}
+async function adminCount(){
+  // Kept only for backwards compatibility; anonymous admin counting is intentionally disabled.
+  return null;
+}
+async function login(){
+ const email=document.querySelector("#email").value.trim();
+ const password=document.querySelector("#password").value;
+ const err=document.querySelector("#err");
+ const btn=document.querySelector(".login button");
+ err.textContent="";
+ clearDiagnostics();
+
+ diag("OK","1. CONFIG","Login diagnostic started",{
+   supabase_url:SUPABASE_URL,
+   has_publishable_key:!!SUPABASE_KEY,
+   key_prefix:SUPABASE_KEY?SUPABASE_KEY.slice(0,14):""
+ });
+
+ if(!email || !password){
+   diag("ERROR","2. INPUT","Email or password is empty");
+   err.textContent="Email and password are required. See diagnostic console.";
+   return;
+ }
+
+ try{
+   if(btn){btn.disabled=true;btn.textContent="Signing in...";}
+
+   const auth=await diagnosticFetch(
+     SUPABASE_URL+"/auth/v1/token?grant_type=password",
+     {
+       method:"POST",
+       headers:{"apikey":SUPABASE_KEY,"Content-Type":"application/json"},
+       body:JSON.stringify({email,password})
+     },
+     "3. SUPABASE PASSWORD LOGIN"
+   );
+
+   if(!auth.r.ok){
+     const d=auth.data||{};
+     diag("ERROR","4. AUTH RESPONSE","Password login was rejected",{
+       status:auth.r.status,
+       code:d.code||d.error_code||null,
+       error:d.error||null,
+       message:d.message||d.error_description||null
+     });
+     throw Error(`Supabase Auth rejected login (HTTP ${auth.r.status}). See diagnostic console for the exact response.`);
+   }
+
+   session=auth.data;
+   if(!session?.access_token){
+     diag("ERROR","4. AUTH RESPONSE","HTTP success but no access_token returned",auth.data);
+     throw Error("Supabase returned no access token.");
+   }
+   diag("OK","4. AUTH RESPONSE","Password authentication succeeded",{
+     user_id:session.user?.id||"not included",
+     expires_at:session.expires_at||null,
+     token_received:true
+   });
+
+   const me=await diagnosticFetch(
+     SUPABASE_URL+"/auth/v1/user",
+     {
+       headers:{
+         "apikey":SUPABASE_KEY,
+         "Authorization":"Bearer "+session.access_token
+       }
+     },
+     "5. GET AUTH USER"
+   );
+
+   if(!me.r.ok) throw Error("Authentication succeeded, but /auth/v1/user failed. See diagnostic console.");
+
+   const user=me.data;
+   diag("OK","6. USER","Authenticated user returned",{id:user?.id,email:user?.email});
+
+   const admin=await diagnosticFetch(
+     SUPABASE_URL+`/rest/v1/admin_users?select=user_id,email&user_id=eq.${encodeURIComponent(user.id)}&limit=1`,
+     {
+       headers:{
+         "apikey":SUPABASE_KEY,
+         "Authorization":"Bearer "+session.access_token
+       }
+     },
+     "7. ADMIN_USERS CHECK"
+   );
+
+   if(!admin.r.ok) throw Error("Authenticated user works, but admin_users query failed. This points to Data API/RLS/policy configuration.");
+
+   if(!Array.isArray(admin.data)||!admin.data.length){
+     diag("ERROR","8. ADMIN CHECK","Auth login succeeded, but this user has no row in public.admin_users.",{user_id:user.id});
+     throw Error("Login succeeded, but this account is not an Admin. See diagnostic console.");
+   }
+
+   diag("OK","8. ADMIN CHECK","Admin account confirmed");
+   isAdmin=true;
+   render();
+   await loadAll();
+
+ }catch(e){
+   session=null;
+   isAdmin=false;
+   diag("ERROR","FINAL","Login flow stopped",{message:e?.message||String(e)});
+   err.textContent=(e?.message||String(e))+" See Login Diagnostic Console.";
+ }finally{
+   if(btn){btn.disabled=false;btn.textContent="Login";}
+ }
+}
+
+async function runLoginDiagnostics(){
+ clearDiagnostics();
+ diag("OK","TEST","Running connection/configuration tests...");
+ try{
+   const health=await diagnosticFetch(SUPABASE_URL+"/auth/v1/settings",{
+     headers:{"apikey":SUPABASE_KEY}
+   },"A. AUTH SETTINGS");
+   if(health.r.ok)diag("OK","A. AUTH SETTINGS","Supabase Auth endpoint is reachable.");
+ }catch(e){}
+ try{
+   const rest=await diagnosticFetch(SUPABASE_URL+"/rest/v1/admin_users?select=user_id&limit=1",{
+     headers:{"apikey":SUPABASE_KEY}
+   },"B. ADMIN_USERS ANONYMOUS TEST");
+   if(rest.r.status===401||rest.r.status===403)diag("OK","B. ADMIN_USERS ANONYMOUS TEST","Anonymous access is blocked (expected when RLS is configured).");
+ }catch(e){}
+ diag("WARN","C. NEXT STEP","Now enter the Admin email/password and press Login. The exact failing step will appear here.");
+}
+function logout(){session=null;isAdmin=false;loginScreen()}
+function loginScreen(){
+ document.getElementById("app").innerHTML=`<div class=login><h2>QX Cloud Admin Login</h2><div class=notice>Sign in with your existing Supabase Admin account.</div><input id=email type=email placeholder="Admin email" autocomplete="username"><input id=password type=password placeholder="Password" autocomplete="current-password"><button class=tab style="width:100%;margin-top:8px" onclick=login()>Login</button><div id=err class=bad style="margin-top:10px"></div><div class=diagnostic style="margin-top:14px"><h3>🔎 Login Diagnostic Console</h3><div id=diagSummary class=diag-summary><span class=diag-pill>Waiting...</span></div><div id=diagnosticLog class=diag-log><div class=muted>No diagnostic events yet.</div></div><div style="margin-top:8px"><button class=tab onclick="clearDiagnostics()">Clear</button><button class=tab onclick="runLoginDiagnostics()">Run Connection Test</button></div></div></div>`;
+}
+function render(){
+document.getElementById("app").innerHTML=`
+<header><div><h1>MONEY IS EVERYTHING — QX Cloud Admin</h1><div class=tag>Cloudflare Pages → Supabase Cloud • public.candles</div></div><button class=tab onclick=logout()>Logout</button></header>
+<main><div class=diagnostic>
+<h3>🔎 Login Diagnostic Console</h3>
+<div id=diagSummary class=diag-summary><span class=diag-pill>Waiting...</span></div>
+<div id=diagnosticLog class=diag-log><div class=muted>No diagnostic events yet.</div></div>
+<div style="margin-top:8px"><button class="tab" onclick="clearDiagnostics()">Clear Diagnostics</button><button class="tab" onclick="runLoginDiagnostics()">Run Connection Test</button></div>
+</div><div class=grid>
+<div class=card>Pending<div class=num id=pending>—</div></div>
+<div class=card>Active Licenses<div class=num id=active>—</div></div>
+<div class=card>Suspended<div class=num id=suspended>—</div></div>
+<div class=card>Devices<div class=num id=devices>—</div></div>
+<div class=card>Candle Rows<div class=num id=candleCount>—</div></div>
+</div>
+<div class=tabs>
+<button class="tab active" onclick="show('requests',this)">Pending</button>
+<button class=tab onclick="show('licenses',this)">Licenses</button>
+<button class=tab onclick="show('devices',this)">Devices</button>
+<button class=tab onclick="show('candles',this)">Candles</button>
+</div>
+<div id=panel class=panel>Loading...</div></main>`}
+async function rpc(name,body={}){return api("/rest/v1/rpc/"+name,{method:"POST",body:JSON.stringify(body)})}
+
+async function loadCandleCount(){
+ try{
+  const r=await api(`/rest/v1/${CANDLE_TABLE}?select=id&limit=1`,{headers:{Prefer:"count=exact"}});
+  // count is exposed by Content-Range when RLS permits it
+  const cr=r.__count;
+  document.querySelector("#candleCount").textContent=cr!=null?Number(cr).toLocaleString():"OK";
+ }catch(e){document.querySelector("#candleCount").textContent="ERR"}
+}
+async function countCandles(){
+ const r=await fetch(`${SUPABASE_URL}/rest/v1/${CANDLE_TABLE}?select=id&limit=1`,{headers:{apikey:SUPABASE_KEY,Authorization:"Bearer "+(session?.access_token||SUPABASE_KEY),Prefer:"count=exact"}});
+ const range=r.headers.get("content-range"); if(!r.ok) throw Error(await r.text());
+ return range&&range.includes("/")?Number(range.split("/")[1]):null;
+}
+async function loadAll(){
+ try{
+  const s=await rpc("admin_get_licenses");
+  document.querySelector("#active").textContent=s.filter(x=>x.status==="active"&&new Date(x.expires_at)>new Date()).length;
+  document.querySelector("#suspended").textContent=s.filter(x=>x.status==="suspended").length;
+  const r=await rpc("admin_get_license_requests");
+  document.querySelector("#pending").textContent=r.filter(x=>x.status==="pending").length;
+  try{document.querySelector("#devices").textContent=(await api("/rest/v1/devices?select=device_id&limit=1",{headers:{Prefer:"count=exact"}}), "✓")}catch{document.querySelector("#devices").textContent="—"}
+  try{const n=await countCandles();document.querySelector("#candleCount").textContent=n==null?"—":n.toLocaleString()}catch{document.querySelector("#candleCount").textContent="ERR"}
+  show("requests",document.querySelector(".tabs .tab.active"));
+ }catch(e){document.querySelector("#panel").innerHTML="<b class=bad>Error:</b> "+esc(e.message)}
+}
+async function show(kind,btn){
+ document.querySelectorAll(".tabs .tab").forEach(x=>x.classList.remove("active"));if(btn)btn.classList.add("active");
+ const p=document.querySelector("#panel");p.innerHTML="Loading...";
+ try{
+ if(kind==="requests"){let a=await rpc("admin_get_license_requests");let rows=a.map(x=>`<tr><td>${esc(x.created_at)}</td><td>${esc(x.name)}</td><td>${esc(x.email)}</td><td>${esc(x.telegram_chat_id||x.telegram_chat||x.telegram)}</td><td>${esc(x.device_id)}</td><td><span class=status>${esc(x.status)}</span></td><td>${x.status==="pending"?`<button class=action onclick="approve('${x.id}')">Approve</button><button class="action reject" onclick="rejectReq('${x.id}')">Reject</button>`:"—"}</td></tr>`).join("");p.innerHTML=`<h3>Registration Requests</h3><table><tr><th>Date</th><th>Name</th><th>Email</th><th>Telegram / Chat ID</th><th>Device</th><th>Status</th><th>Action</th></tr>${rows}</table>`}
+ if(kind==="licenses"){let a=await rpc("admin_get_licenses");let rows=a.map(x=>`<tr><td>${esc(x.license_key)}</td><td>${esc(x.customer_name)}</td><td>${esc(x.customer_email)}</td><td><span class=status>${esc(x.status)}</span></td><td>${esc(x.expires_at)}</td><td>${esc(x.max_devices)}</td><td><button class=action onclick="extendLic('${x.id}')">+1 Year</button><button class="action gray" onclick="resetDev('${x.id}')">Reset Device</button><button class="action" onclick="resendLic('${x.id}')">Resend Telegram</button><button class="action reject" onclick="suspendLic('${x.id}')">Suspend</button></td></tr>`).join("");p.innerHTML=`<h3>Licenses</h3><table><tr><th>License</th><th>Name</th><th>Email</th><th>Status</th><th>Expires</th><th>Max Devices</th><th>Action</th></tr>${rows}</table>`}
+ if(kind==="devices"){let a=await api("/rest/v1/devices?select=*&order=last_seen.desc");let rows=a.map(x=>`<tr><td>${esc(x.device_id)}</td><td>${esc(x.device_name)}</td><td>${esc(x.license_id)}</td><td>${esc(x.status)}</td><td>${esc(x.last_seen)}</td></tr>`).join("");p.innerHTML=`<h3>Devices</h3><table><tr><th>Device ID</th><th>Device Name</th><th>License ID</th><th>Status</th><th>Last Seen</th></tr>${rows}</table>`}
+ if(kind==="candles") await renderCandles();
+ }catch(e){p.innerHTML="<b class=bad>Error:</b> "+esc(e.message)}
+}
+async function renderCandles(){
+ const p=document.querySelector("#panel");
+ p.innerHTML=`<h3>Cloud Candles — public.candles</h3><div class=notice><span class=muted>Source:</span> Supabase table <b>public.candles</b>. This dashboard reads real rows only; it does not generate candle data.</div>
+ <div class=toolbar><input id=pair type=text placeholder="Pair (optional)" value="${esc(lastPair)}"><button class=action onclick=refreshCandles()>Refresh</button></div><div id=candleMeta class=muted>Loading...</div><div id=candleTable style="margin-top:10px">Loading...</div>`;
+ await refreshCandles();
+}
+async function refreshCandles(){
+ const pair=(document.querySelector("#pair")?.value||"").trim();lastPair=pair;
+ let q=`/rest/v1/${CANDLE_TABLE}?select=id,pair,timeframe,candle_time,open,high,low,close,ticks&order=candle_time.desc&limit=100`;
+ if(pair)q+=`&pair=eq.${encodeURIComponent(pair)}`;
+ const rows=await api(q);
+ document.querySelector("#candleMeta").textContent=`Showing ${rows.length.toLocaleString()} latest row(s)${pair?" for "+pair:""}.`;
+ document.querySelector("#candleTable").innerHTML=rows.length?`<table><tr><th>Time</th><th>Pair</th><th>TF</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Ticks</th></tr>${rows.map(x=>`<tr><td>${esc(x.candle_time)}</td><td>${esc(x.pair)}</td><td>${esc(x.timeframe)}</td><td>${esc(x.open)}</td><td>${esc(x.high)}</td><td>${esc(x.low)}</td><td>${esc(x.close)}</td><td>${esc(x.ticks)}</td></tr>`).join("")}</table>`:"<div class=muted>No rows returned. Check RLS/table permissions and pair filter.</div>";
+}
+async function approve(id){
+ try{
+  const r=await fetch("/api/approve-license",{method:"POST",headers:{"content-type":"application/json",Authorization:"Bearer "+session.access_token},body:JSON.stringify({request_id:id})});
+  const out=await r.json();
+  if(!r.ok||!out.ok) throw Error(out.error||"Approval failed.");
+  alert("Approved ✓\nLicense: "+(out.license?.license_key||"generated")+"\nTelegram: sent ✓");
+  loadAll();
+ }catch(e){alert(e.message)}
+}
+async function rejectReq(id){try{await rpc("admin_reject_license",{p_request_id:id});loadAll()}catch(e){alert(e.message)}}
+async function extendLic(id){try{await rpc("admin_extend_license",{p_license_id:id});loadAll()}catch(e){alert(e.message)}}
+async function resetDev(id){try{await rpc("admin_reset_license_device",{p_license_id:id});loadAll()}catch(e){alert(e.message)}}
+async function suspendLic(id){try{await rpc("admin_suspend_license",{p_license_id:id});loadAll()}catch(e){alert(e.message)}}
+async function resendLic(id){try{const r=await fetch("/api/resend-license",{method:"POST",headers:{"content-type":"application/json",Authorization:"Bearer "+session.access_token},body:JSON.stringify({license_id:id})});const out=await r.json();if(!r.ok||!out.ok)throw Error(out.error||"Telegram resend failed.");alert("Telegram sent ✓");}catch(e){alert(e.message)}}
+loginScreen();
+</script></body></html>
