@@ -4,6 +4,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     try {
+      if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders(request) });
       if (url.pathname === '/api/health' && request.method === 'GET') {
         return json({ ok: true, service: 'QX Cloud License Gateway' });
       }
@@ -20,8 +21,9 @@ export default {
   }
 };
 
-function json(data, status=200) {
-  return new Response(JSON.stringify(data), { status, headers: JSON_HEADERS });
+function json(data, status=200, request=null) {
+  const headers = request ? corsHeaders(request) : JSON_HEADERS;
+  return new Response(JSON.stringify(data ?? {}), { status, headers });
 }
 
 function corsHeaders(request) {
@@ -56,20 +58,26 @@ async function requireAdmin(request, env) {
 
 function httpError(message, status) { const e = new Error(message); e.status = status; return e; }
 
+async function readJson(request) {
+  const text = await request.text();
+  if (!text.trim()) throw httpError('Request body is empty.', 400);
+  try { return JSON.parse(text); } catch { throw httpError('Request body is not valid JSON.', 400); }
+}
+
 async function register(request, env) {
-  const body = await request.json();
+  const body = await readJson(request);
   const name = String(body.name || '').trim();
   const email = String(body.email || '').trim().toLowerCase();
   const telegram = String(body.telegram || '').trim();
   const deviceId = String(body.device_id || '').trim();
   const deviceName = String(body.device_name || 'Kiwi/Chrome Android').trim();
-  if (!name || !email || !telegram || !deviceId) return new Response(JSON.stringify({ok:false,error:'Name, email, Telegram and device ID are required.'}), {status:400,headers:corsHeaders(request)});
-  if (!/^\S+@\S+\.\S+$/.test(email)) return new Response(JSON.stringify({ok:false,error:'Invalid email address.'}), {status:400,headers:corsHeaders(request)});
+  if (!name || !email || !telegram || !deviceId) return json({ok:false,error:'Name, email, Telegram and device ID are required.'}, 400, request);
+  if (!/^\S+@\S+\.\S+$/.test(email)) return json({ok:false,error:'Invalid email address.'}, 400, request);
 
   const existingResp = await supabase(request, env, `/rest/v1/license_registrations?select=id,status&email=eq.${encodeURIComponent(email)}&device_id=eq.${encodeURIComponent(deviceId)}&status=eq.pending&limit=1`);
   if (!existingResp.ok) throw new Error(`Supabase request lookup failed: ${await existingResp.text()}`);
   const existing = await existingResp.json();
-  if (existing.length) return new Response(JSON.stringify({ok:true,status:'pending',request_id:existing[0].id}), {headers:corsHeaders(request)});
+  if (existing.length) return json({ok:true,status:'pending',request_id:existing[0].id}, 200, request);
 
   const insertResp = await supabase(request, env, '/rest/v1/license_registrations', {
     method:'POST',
@@ -78,36 +86,44 @@ async function register(request, env) {
   });
   if (!insertResp.ok) throw new Error(`Supabase registration save failed: ${await insertResp.text()}`);
   const rows = await insertResp.json();
-  return new Response(JSON.stringify({ok:true,status:'pending',request_id:rows?.[0]?.id || null}), {headers:corsHeaders(request)});
+  return json({ok:true,status:'pending',request_id:rows?.[0]?.id || null}, 200, request);
 }
 
 async function approveLicense(request, env) {
   const { bearer } = await requireAdmin(request, env);
-  const body = await request.json();
+  const body = await readJson(request);
   const requestId = String(body.request_id || '').trim();
   if (!requestId) throw httpError('request_id is required.', 400);
+  if (!/^\d+$/.test(requestId)) throw httpError('request_id must be a valid registration ID.', 400);
 
-  // First ask Supabase to approve/create the license. The RPC checks auth.uid() against admin_users.
-  const rpc = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/admin_approve_license`, {
+  // IMPORTANT: the production Extension uses public.license_registrations (bigint IDs).
+  // The matching Supabase RPC is admin_approve_license_registration(bigint).
+  const rpc = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/admin_approve_license_registration`, {
     method:'POST',
-    headers:{apikey:env.SUPABASE_SERVICE_ROLE_KEY, Authorization:bearer, 'content-type':'application/json'},
+    headers:{apikey:env.SUPABASE_SERVICE_ROLE_KEY, Authorization:`Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`, 'content-type':'application/json'},
     body:JSON.stringify({p_registration_id:Number(requestId)})
   });
-  const data = await rpc.json().catch(()=>({}));
-  if (!rpc.ok || !data?.ok) return json({ok:false,error:data?.message||data?.hint||data?.error||'Supabase approval failed.'}, 400);
+
+  const raw = await rpc.text();
+  let data = {};
+  try { data = raw.trim() ? JSON.parse(raw) : {}; } catch { data = {}; }
+  if (!rpc.ok || !data?.ok) {
+    return json({ok:false,error:data?.message||data?.hint||data?.error||raw||'Supabase approval failed.'}, 400, request);
+  }
 
   const lic = data.license || {};
-  const req = data.registration || data.request || {};
-  const sent = await telegramSend(env, String(req.telegram_chat_id || '').trim(), lic);
-  if (!sent.ok) return json({ok:false,error:`License activated in Supabase, but Telegram delivery failed: ${sent.error}`,license:lic,delivery_failed:true}, 502);
+  const reg = data.registration || {};
+  const chatId = String(reg.telegram_chat_id || '').trim();
+  const sent = await telegramSend(env, chatId, lic);
+  if (!sent.ok) return json({ok:false,error:`License activated in Supabase, but Telegram delivery failed: ${sent.error}`,license:lic,delivery_failed:true}, 502, request);
 
   await supabase(request, env, `/rest/v1/licenses?id=eq.${encodeURIComponent(lic.id)}`, {method:'PATCH',body:JSON.stringify({last_telegram_sent_at:new Date().toISOString(),updated_at:new Date().toISOString()})});
-  return json({ok:true,license:lic,telegram:sent});
+  return json({ok:true,license:lic,telegram:sent}, 200, request);
 }
 
 async function resendLicense(request, env) {
   await requireAdmin(request, env);
-  const body = await request.json();
+  const body = await readJson(request);
   const licenseId = String(body.license_id || '').trim();
   if (!licenseId) throw httpError('license_id is required.', 400);
   const r = await supabase(request, env, `/rest/v1/licenses?select=*&id=eq.${encodeURIComponent(licenseId)}&limit=1`);
@@ -120,19 +136,18 @@ async function resendLicense(request, env) {
   const req = (await q.json())?.[0];
   if (!req?.telegram_chat_id) throw httpError('No Telegram Chat ID is linked to this license.', 400);
   const sent = await telegramSend(env, req.telegram_chat_id, lic);
-  if (!sent.ok) return json({ok:false,error:sent.error},502);
+  if (!sent.ok) return json({ok:false,error:sent.error},502,request);
   await supabase(request, env, `/rest/v1/licenses?id=eq.${encodeURIComponent(licenseId)}`, {method:'PATCH',body:JSON.stringify({last_telegram_sent_at:new Date().toISOString(),updated_at:new Date().toISOString()})});
-  return json({ok:true,telegram:sent});
+  return json({ok:true,telegram:sent},200,request);
 }
 
 async function sendLicense(request, env) {
-  // Kept as a compatibility endpoint, but it is admin-only now.
   await requireAdmin(request, env);
-  const body = await request.json();
+  const body = await readJson(request);
   const chatId = String(body.telegram_chat_id || '').trim();
   const licenseKey = String(body.license_key || '').trim();
   if (!chatId || !licenseKey) throw httpError('telegram_chat_id and license_key are required.', 400);
-  return json(await telegramSend(env, chatId, {license_key:licenseKey, plan:body.plan, expires_at:body.expires_at, max_devices:body.max_devices}));
+  return json(await telegramSend(env, chatId, {license_key:licenseKey, plan:body.plan, expires_at:body.expires_at, max_devices:body.max_devices}),200,request);
 }
 
 async function telegramSend(env, chatId, lic) {
@@ -149,16 +164,18 @@ async function telegramSend(env, chatId, lic) {
   const tg = await fetch(`https://api.telegram.org/bot${encodeURIComponent(env.TELEGRAM_BOT_TOKEN)}/sendMessage`, {
     method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({chat_id:chatId,text})
   });
-  const result = await tg.json().catch(()=>({}));
-  if (!tg.ok || !result.ok) return {ok:false,error:result.description || 'Telegram send failed.'};
+  const raw = await tg.text();
+  let result = {};
+  try { result = raw.trim() ? JSON.parse(raw) : {}; } catch { result = {}; }
+  if (!tg.ok || !result.ok) return {ok:false,error:result.description || raw || 'Telegram send failed.'};
   return {ok:true,chat_id:chatId,telegram_message_id:result.result?.message_id || null};
 }
 
 async function telegramWebhook(request, env) {
   if (!env.TELEGRAM_BOT_TOKEN || !env.SUPABASE_SERVICE_ROLE_KEY) throw httpError('Telegram/Supabase server secrets are not configured.', 500);
-  const update = await request.json();
+  const update = await readJson(request);
   const msg = update?.message;
-  if (!msg?.chat?.id) return json({ok:true,ignored:true});
+  if (!msg?.chat?.id) return json({ok:true,ignored:true},200,request);
   const chatId = String(msg.chat.id);
   const username = msg.from?.username ? String(msg.from.username) : null;
   const firstName = msg.from?.first_name || null;
@@ -183,5 +200,5 @@ async function telegramWebhook(request, env) {
   await fetch(`https://api.telegram.org/bot${encodeURIComponent(env.TELEGRAM_BOT_TOKEN)}/sendMessage`, {
     method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({chat_id:chatId,text:reply})
   });
-  return json({ok:true,chat_id:chatId});
+  return json({ok:true,chat_id:chatId},200,request);
 }
