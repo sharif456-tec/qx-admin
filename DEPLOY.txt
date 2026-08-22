@@ -1,0 +1,34 @@
+QX CLOUD ADMIN — DEPLOY ORDER
+
+A) SUPABASE FIRST
+1. Open Supabase SQL Editor.
+2. Run: supabase_license_migration.sql
+3. Confirm tables: admin_users, telegram_chats, license_requests, licenses, devices.
+4. Confirm RPCs: admin_get_license_requests, admin_get_licenses, admin_approve_license, admin_reject_license, admin_extend_license, admin_reset_license_device, admin_suspend_license, activate_license, heartbeat_license, link_telegram_chat.
+
+B) CLOUDFLARE PAGES
+1. Workers & Pages → Create application → Pages → Direct Upload.
+2. Upload this ZIP using drag-and-drop.
+3. Add environment variables/secrets:
+   SUPABASE_URL
+   SUPABASE_ANON_KEY
+   SUPABASE_SERVICE_ROLE_KEY (Secret)
+   TELEGRAM_BOT_TOKEN (Secret)
+4. Deploy.
+5. Note the Pages hostname, e.g. your-project.pages.dev.
+
+C) TELEGRAM WEBHOOK
+Set the bot webhook to:
+https://YOUR-PAGES-DOMAIN.pages.dev/api/telegram-webhook
+
+D) ADMIN
+Open the Pages URL. Create the first Admin account. The first account becomes Admin through the protected claim_first_admin RPC.
+
+E) EXTENSION
+1. In the companion extension ZIP, edit background.js:
+   REGISTRATION_API_URL = "https://YOUR-PAGES-DOMAIN.pages.dev/api/register"
+2. Replace the placeholder with your real Pages hostname.
+3. Reload/install the extension in Kiwi.
+
+FLOW TEST
+Registration → Cloudflare /api/register → Supabase license_requests → Admin Approve → Supabase license creation → Telegram automatic delivery → Extension activation → Supabase device binding/heartbeat.
