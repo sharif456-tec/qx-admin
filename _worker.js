@@ -8,6 +8,7 @@ export default {
       if (url.pathname === '/api/health' && request.method === 'GET') return json({ ok:true, service:'QX Cloud License Gateway' });
       if (url.pathname === '/api/register' && request.method === 'POST') return await register(request, env);
       if (url.pathname === '/api/approve-license' && request.method === 'POST') return await approveLicense(request, env);
+      if (url.pathname === '/api/reject-license' && request.method === 'POST') return await rejectLicense(request, env);
       if (url.pathname === '/api/resend-license' && request.method === 'POST') return await resendLicense(request, env);
       if (url.pathname === '/api/telegram-webhook' && request.method === 'POST') return await telegramWebhook(request, env);
       if (url.pathname === '/api/send-license' && request.method === 'POST') return await sendLicense(request, env);
@@ -27,8 +28,8 @@ async function requireAdmin(request,env){
   const auth=request.headers.get('Authorization')||'';
   if(!auth.startsWith('Bearer ')) throw httpError('Missing admin authentication.',401);
   if(!env.SUPABASE_URL||!env.SUPABASE_SERVICE_ROLE_KEY) throw httpError('Cloudflare Supabase secrets are not configured.',500);
-  // Validate the browser's access token through Supabase Auth. Use the trusted service key only as the API key; never expose it to the browser.
-  const userResp=await fetch(`${env.SUPABASE_URL}/auth/v1/user`,{headers:{apikey:env.SUPABASE_SERVICE_ROLE_KEY,Authorization:auth}});
+  const apiKey=env.SUPABASE_ANON_KEY||env.SUPABASE_SERVICE_ROLE_KEY;
+  const userResp=await fetch(`${env.SUPABASE_URL}/auth/v1/user`,{headers:{apikey:apiKey,Authorization:auth}});
   const userRaw=await userResp.text();
   let user={}; try{userRaw.trim()&&(user=JSON.parse(userRaw))}catch{}
   if(!userResp.ok||!user?.id) throw httpError(`Supabase session validation failed (${userResp.status}): ${user?.msg||user?.message||userRaw||'invalid or expired session'}`,401);
@@ -63,6 +64,17 @@ async function approveLicense(request,env){
  if(!sent.ok)return json({ok:false,error:`License activated in Supabase, but Telegram delivery failed: ${sent.error}`,license:lic,delivery_failed:true},502,request);
  await supabase(env,`/rest/v1/licenses?id=eq.${encodeURIComponent(lic.id)}`,{method:'PATCH',body:JSON.stringify({last_telegram_sent_at:new Date().toISOString(),updated_at:new Date().toISOString()})});
  return json({ok:true,license:lic,telegram:sent},200,request);
+}
+
+async function rejectLicense(request,env){
+ await requireAdmin(request,env);
+ const body=await readJson(request),requestId=String(body.request_id||'').trim();
+ if(!/^\d+$/.test(requestId))throw httpError('request_id must be a valid registration ID.',400);
+ const resp=await supabase(env,`/rest/v1/license_registrations?id=eq.${encodeURIComponent(requestId)}&status=eq.pending`,{method:'PATCH',headers:{Prefer:'return=representation'},body:JSON.stringify({status:'rejected',rejected_at:new Date().toISOString(),updated_at:new Date().toISOString()})});
+ const raw=await resp.text();let rows=[];try{raw.trim()&&(rows=JSON.parse(raw))}catch{}
+ if(!resp.ok)return json({ok:false,error:raw||'Supabase reject failed.'},400,request);
+ if(!Array.isArray(rows)||!rows.length)return json({ok:false,error:'Pending registration not found or already processed.'},404,request);
+ return json({ok:true},200,request);
 }
 
 async function resendLicense(request,env){await requireAdmin(request,env);const body=await readJson(request),licenseId=String(body.license_id||'').trim();if(!licenseId)throw httpError('license_id is required.',400);const r=await supabase(env,`/rest/v1/licenses?select=*&id=eq.${encodeURIComponent(licenseId)}&limit=1`);if(!r.ok)throw new Error(await r.text());const lic=(await r.json())?.[0];if(!lic)throw httpError('License not found.',404);const q=await supabase(env,`/rest/v1/license_registrations?select=*&license_id=eq.${encodeURIComponent(licenseId)}&limit=1`);if(!q.ok)throw new Error(await q.text());const req=(await q.json())?.[0];if(!req?.telegram_chat_id)throw httpError('No Telegram Chat ID is linked to this license.',400);const sent=await telegramSend(env,req.telegram_chat_id,lic);if(!sent.ok)return json({ok:false,error:sent.error},502,request);await supabase(env,`/rest/v1/licenses?id=eq.${encodeURIComponent(licenseId)}`,{method:'PATCH',body:JSON.stringify({last_telegram_sent_at:new Date().toISOString(),updated_at:new Date().toISOString()})});return json({ok:true,telegram:sent},200,request)}
