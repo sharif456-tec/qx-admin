@@ -43,49 +43,21 @@ async function api(path,opt={}){
   if(!r.ok) throw Error(d?.message||d?.error_description||`HTTP ${r.status}`);
   return d;
 }
-async function checkFirstAdmin(){
-  try { return await api("/rest/v1/admin_users?select=id&limit=1", {headers:{Prefer:"count=exact"}}); }
-  catch(e){ return null; }
-}
-async function adminCount(){
-  const r=await fetch(`${SUPABASE_URL}/rest/v1/admin_users?select=id&limit=1`,{headers:{apikey:SUPABASE_KEY,Authorization:"Bearer "+SUPABASE_KEY,Prefer:"count=exact"}});
-  if(!r.ok) throw Error(await r.text());
-  const cr=r.headers.get('content-range');
-  return cr&&cr.includes('/') ? Number(cr.split('/')[1]) : 0;
-}
 async function login(){
  const email=document.querySelector("#email").value.trim(), password=document.querySelector("#password").value;
+ const err=document.querySelector("#err"); err.textContent="";
  try{
    session=await api("/auth/v1/token?grant_type=password",{method:"POST",body:JSON.stringify({email,password})});
    const me=await api("/auth/v1/user");
    const admins=await api(`/rest/v1/admin_users?select=user_id,email&user_id=eq.${encodeURIComponent(me.id)}&limit=1`);
-   if(!admins.length){ session=null; throw Error("This account is not an Admin."); }
+   if(!admins.length){ session=null; throw Error("This account is not an Admin. Use the authorized Supervisor/Admin account."); }
    isAdmin=true; render(); await loadAll();
- }catch(e){document.querySelector("#err").textContent=e.message}
-}
-async function createFirstAdmin(){
- const email=document.querySelector("#setupEmail").value.trim(), password=document.querySelector("#setupPassword").value, confirm=document.querySelector("#setupPassword2").value;
- const err=document.querySelector("#setupErr"); err.textContent="";
- if(!email || password.length<8 || password!==confirm){err.textContent="Use a valid email and matching password (minimum 8 characters).";return}
- try{
-   const count=await adminCount();
-   if(count>0){loginScreen();return;}
-   const signup=await api("/auth/v1/signup",{method:"POST",body:JSON.stringify({email,password})});
-   // If email confirmation is enabled, signup may not return an access token.
-   if(!signup.access_token){err.textContent="Account created. Check your email to confirm, then log in. After confirmation, the first account can be claimed as Admin.";return;}
-   session=signup; const me=await api("/auth/v1/user");
-   await api("/rest/v1/rpc/claim_first_admin",{method:"POST",body:JSON.stringify({p_user_id:me.id,p_email:email})});
-   isAdmin=true; render(); await loadAll();
- }catch(e){err.textContent=e.message}
+ }catch(e){session=null;isAdmin=false;err.textContent=e.message}
 }
 function logout(){session=null;isAdmin=false;loginScreen()}
-async function loginScreen(){
- let count=0; try{count=await adminCount()}catch(e){}
- if(count===0){
-   document.getElementById("app").innerHTML=`<div class=login><h2>First Admin Setup</h2><div class=notice>There is no Admin yet. <b>The first account you create here becomes the Admin.</b></div><input id=setupEmail type=email placeholder="Admin email"><input id=setupPassword type=password placeholder="Password (8+ characters)"><input id=setupPassword2 type=password placeholder="Confirm password"><button class=tab style="width:100%;margin-top:8px" onclick=createFirstAdmin()>Create First Admin</button><div id=setupErr class=bad style="margin-top:10px"></div></div>`;
- } else {
-   document.getElementById("app").innerHTML=`<div class=login><h2>QX Cloud Admin Login</h2><input id=email type=email placeholder="Admin email"><input id=password type=password placeholder="Password"><button class=tab style="width:100%;margin-top:8px" onclick=login()>Login</button><div id=err class=bad style="margin-top:10px"></div></div>`;
- }
+function loginScreen(){
+ document.getElementById("app").innerHTML=`<div class=login><h2>QX Cloud Admin Login</h2><div class=notice>Admin registration is disabled. Sign in with the existing authorized Admin/Supervisor account connected to this dashboard.</div><input id=email type=email autocomplete=email placeholder="Admin email"><input id=password type=password autocomplete=current-password placeholder="Password"><button class=tab style="width:100%;margin-top:8px" onclick=login()>Login</button><div id=err class=bad style="margin-top:10px"></div></div>`;
+ document.getElementById("email").focus();
 }
 function render(){
 document.getElementById("app").innerHTML=`

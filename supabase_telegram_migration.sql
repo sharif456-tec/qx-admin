@@ -41,9 +41,11 @@ exception when undefined_table or undefined_column then
 end;
 $$;
 
--- FIRST ADMIN SETUP ---------------------------------------------------------
--- The first authenticated account claimed through claim_first_admin becomes
--- the only admin. Later accounts cannot claim admin through this RPC.
+-- ADMIN ACCESS --------------------------------------------------------------
+-- Admin registration/first-user claiming is intentionally disabled in the
+-- dashboard. The existing authorized Admin/Supervisor account must already
+-- be present in public.admin_users. This prevents a random first visitor from
+-- becoming an administrator.
 create table if not exists public.admin_users (
   user_id uuid primary key references auth.users(id) on delete cascade,
   email text,
@@ -51,28 +53,13 @@ create table if not exists public.admin_users (
 );
 alter table public.admin_users enable row level security;
 
-create or replace function public.claim_first_admin(p_user_id uuid, p_email text)
-returns jsonb
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare n integer;
-begin
-  if auth.uid() is null or auth.uid() <> p_user_id then
-    raise exception 'Not authorized';
-  end if;
-  select count(*) into n from public.admin_users;
-  if n > 0 then
-    raise exception 'An admin already exists';
-  end if;
-  insert into public.admin_users(user_id,email) values(p_user_id,p_email);
-  return jsonb_build_object('ok',true,'user_id',p_user_id);
-end;
-$$;
-
-revoke all on function public.claim_first_admin(uuid,text) from public;
-grant execute on function public.claim_first_admin(uuid,text) to authenticated;
+-- Legacy claim_first_admin RPC intentionally removed. Do not expose a
+-- browser-side "first admin" registration flow. To authorize an existing
+-- Supabase Auth user, insert that user's UUID into public.admin_users using a
+-- trusted/admin SQL session, for example:
+--   insert into public.admin_users(user_id,email)
+--   select id,email from auth.users where email = 'YOUR_ADMIN_EMAIL';
+-- Run that only for the intended administrator.
 
 -- Admin-only browser read. This is intentionally limited to the current user.
 drop policy if exists "admin self read" on public.admin_users;

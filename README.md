@@ -66,4 +66,4 @@ Applicant → Telegram `/start` → chat ID registration → application → Adm
 
 ## Security
 
-The first-admin claim/login logic is application-specific. Use Supabase Auth and RLS for production access control. Do not rely only on a hidden UI button for authorization.
+Admin registration is disabled in the dashboard. The login checks Supabase Auth plus membership in `public.admin_users`, so a random visitor cannot become Admin. Keep `admin_users` protected with RLS and add the intended Supervisor/Admin Auth user to that table from a trusted SQL session. The existing license/Telegram/Supervisor RPC flow is left intact.
