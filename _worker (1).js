@@ -2,92 +2,73 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // 1. Handle POST requests from Supabase Webhook or Admin Panel
-    if (request.method === 'POST') {
+    const json = (body, status = 200) => new Response(JSON.stringify(body), {
+      status,
+      headers: { 'Content-Type': 'application/json' }
+    });
+
+    const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type,Authorization' };
+    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
+
+    // Supabase -> Cloudflare license notification / admin-originated protected POST.
+    if (request.method === 'POST' && (url.pathname === '/' || url.pathname === '/api/license-notification')) {
       try {
-        // Security Authorization Check
         const authHeader = request.headers.get('Authorization');
         const expectedToken = env.ADMIN_SECRET_TOKEN ? `Bearer ${env.ADMIN_SECRET_TOKEN}` : null;
-
-        if (!authHeader || authHeader !== expectedToken) {
-          return new Response(JSON.stringify({ 
-            error: 'Unauthorized request!', 
-            debug: 'Token mismatch. Check Supabase Headers and Cloudflare Env Variables.' 
-          }), {
-            status: 401,
-            headers: { 'Content-Type': 'application/json' }
-          });
-        }
+        if (!expectedToken || authHeader !== expectedToken) return json({ error: 'Unauthorized request' }, 401);
 
         const payload = await request.json();
-        const record = payload.record || payload; 
+        const record = payload.record || payload;
+        if (!record?.telegram_chat_id) return json({ error: 'Invalid payload or missing telegram_chat_id' }, 400);
+        if (!env.TELEGRAM_BOT_TOKEN) return json({ error: 'TELEGRAM_BOT_TOKEN is missing' }, 500);
 
-        if (!record || !record.telegram_chat_id) {
-          return new Response(JSON.stringify({ error: 'Invalid payload or missing telegram_chat_id.' }), {
-            status: 400,
-            headers: { 'Content-Type': 'application/json' }
-          });
-        }
-
-        // Collect database variables
-        const userName = record.name || 'User';
-        const userEmail = record.email || 'N/A';
-        const telegramId = record.telegram || 'N/A';
+        const esc = v => String(v ?? '').replace(/[_*\[\]()~`>#+\-=|{}.!]/g, '\\$&');
         const chatId = record.telegram_chat_id;
-        const deviceName = record.device_name || 'Unknown Device';
-
-        // Escape special characters to prevent Telegram MarkdownV2 crashes
-        const safeName = userName.replace(/[_*\[\]()~`>#+\-=|{}.!]/g, '\\$&');
-        const safeEmail = userEmail.replace(/[_*\[\]()~`>#+\-=|{}.!]/g, '\\$&');
-        const safeTelegram = telegramId.replace(/[_*\[\]()~`>#+\-=|{}.!]/g, '\\$&');
-        const safeDevice = deviceName.replace(/[_*\[\]()~`>#+\-=|{}.!]/g, '\\$&');
-
-        // Construct Telegram Message
         const messageText = `🆕 *New License Request Notification*\\!\n\n` +
-                            `👤 *Name:* ${safeName}\n` +
-                            `📧 *Email:* ${safeEmail}\n` +
-                            `📱 *Telegram User:* ${safeTelegram}\n` +
-                            `💻 *Device:* ${safeDevice}\n` +
-                            `🆔 *Chat ID:* \\`${chatId}\\`\n\n` +
-                            `⏳ Status is pending\. Please approve from your Admin Dashboard\.`;
+          `👤 *Name:* ${esc(record.name || 'User')}\n` +
+          `📧 *Email:* ${esc(record.email || 'N/A')}\n` +
+          `📱 *Telegram User:* ${esc(record.telegram || 'N/A')}\n` +
+          `💻 *Device:* ${esc(record.device_name || 'Unknown Device')}\n` +
+          `🆔 *Chat ID:* \\`${esc(chatId)}\\`\n\n` +
+          `⏳ Status is pending\\. Please approve from your Admin Dashboard\\.`;
 
-        // Check Telegram Bot Token
-        if (!env.TELEGRAM_BOT_TOKEN) {
-          return new Response(JSON.stringify({ error: 'TELEGRAM_BOT_TOKEN is missing in Cloudflare variables.' }), { status: 500 });
-        }
-
-        const telegramUrl = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`;
-
-        // Call Telegram API
-        const telegramResponse = await fetch(telegramUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: chatId,
-            text: messageText,
-            parse_mode: 'MarkdownV2'
-          })
+        const telegramResponse = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, text: messageText, parse_mode: 'MarkdownV2' })
         });
-
-        if (!telegramResponse.ok) {
-          const errorText = await telegramResponse.text();
-          return new Response(JSON.stringify({ error: 'Telegram API Error', details: errorText }), { status: 502 });
-        }
-
-        return new Response(JSON.stringify({ success: true, message: 'Notification sent to Telegram.' }), { 
-          status: 200, 
-          headers: { 'Content-Type': 'application/json' } 
-        });
-
-      } catch (error) {
-        return new Response(JSON.stringify({ error: 'Internal Server Error', message: error.message }), { 
-          status: 500, 
-          headers: { 'Content-Type': 'application/json' } 
-        });
-      }
+        if (!telegramResponse.ok) return json({ error: 'Telegram API Error', details: await telegramResponse.text() }, 502);
+        return json({ success: true, message: 'Notification sent to Telegram.' }, 200);
+      } catch (error) { return json({ error: 'Internal Server Error', message: error.message }, 500); }
     }
 
-    // 2. Default browser visit (GET Request) loads your original website frontend assets
+    // Extension registration endpoint. Stores a pending request in Supabase.
+    if (request.method === 'POST' && url.pathname === '/api/register') {
+      try {
+        if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return json({ error: 'Supabase variables are missing' }, 500);
+        const body = await request.json();
+        if (!body.telegram_chat_id) return json({ error: 'telegram_chat_id is required' }, 400);
+        const response = await fetch(`${env.SUPABASE_URL}/rest/v1/license_registrations`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'apikey': env.SUPABASE_SERVICE_ROLE_KEY, 'Authorization': `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`, 'Prefer': 'return=representation' },
+          body: JSON.stringify({ name: body.name || 'User', email: body.email || null, telegram: body.telegram || null, telegram_chat_id: body.telegram_chat_id, device_name: body.device_name || 'Unknown Device' })
+        });
+        const text = await response.text();
+        if (!response.ok) return json({ error: 'Supabase registration failed', details: text }, 502);
+        return json({ success: true, registration: JSON.parse(text) }, 200);
+      } catch (error) { return json({ error: 'Registration failed', message: error.message }, 500); }
+    }
+
+    // Telegram webhook endpoint. Telegram update is acknowledged safely; actual license flow remains in Supabase.
+    if (request.method === 'POST' && url.pathname === '/api/telegram-webhook') {
+      try {
+        const update = await request.json();
+        const chatId = update?.message?.chat?.id;
+        if (!chatId) return json({ ok: true, ignored: true }, 200);
+        return json({ ok: true }, 200);
+      } catch (error) { return json({ ok: false, error: error.message }, 400); }
+    }
+
+    // Default browser visit loads Pages assets.
     return env.ASSETS.fetch(request);
   }
 };
