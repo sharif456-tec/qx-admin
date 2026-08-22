@@ -26,3 +26,6 @@ Cloudflare project-এর Settings → Environment variables/Secrets-এ server-
 
 ## পরে update
 GitHub-এ code পরিবর্তন করে push করলে Cloudflare Pages Git deployment চালু থাকলে নতুন deployment তৈরি হবে।
+
+
+V3 FIX: The admin login page no longer performs an anonymous `admin_users` count. It always shows the login form first, then checks the signed-in Supabase user against `public.admin_users` using the authenticated access token. This avoids the RLS false-zero that previously displayed “First Admin Setup” even when an Admin already existed. No new Admin account is required.

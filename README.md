@@ -62,3 +62,6 @@ It appears in `background.js` and `manifest.json`. Reload the extension after th
 - License creation occurs in Supabase before Telegram delivery.
 - If Telegram delivery fails after approval, the license remains in Supabase and the Admin dashboard has **Resend Telegram**.
 - License activation/device binding is enforced in Supabase, not only in browser JavaScript.
+
+
+V3 FIX: The admin login page no longer performs an anonymous `admin_users` count. It always shows the login form first, then checks the signed-in Supabase user against `public.admin_users` using the authenticated access token. This avoids the RLS false-zero that previously displayed “First Admin Setup” even when an Admin already existed. No new Admin account is required.
