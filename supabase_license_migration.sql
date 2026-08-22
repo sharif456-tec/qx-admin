@@ -325,3 +325,120 @@ grant select on public.devices to authenticated;
 
 -- Service role owns the server-side tables/functions.
 grant all on public.licenses, public.license_requests, public.telegram_chats, public.devices to service_role;
+
+
+-- ================================================================
+-- Existing production registration table compatibility
+-- The Kiwi Extension currently writes to public.license_registrations.
+-- The Admin/Telegram flow must use that same table end-to-end.
+-- ================================================================
+create table if not exists public.license_registrations (
+  id bigint primary key,
+  name text,
+  email text,
+  telegram text,
+  device_id text,
+  device_name text,
+  status text default 'pending',
+  created_at timestamptz default now(),
+  updated_at timestamptz default now(),
+  telegram_chat_id text
+);
+
+alter table public.license_registrations enable row level security;
+alter table public.license_registrations add column if not exists license_id uuid references public.licenses(id) on delete set null;
+create index if not exists license_registrations_status_idx on public.license_registrations(status, created_at desc);
+create index if not exists license_registrations_license_idx on public.license_registrations(license_id);
+create index if not exists license_registrations_email_idx on public.license_registrations(lower(email));
+
+-- Telegram /start links to the REAL registration table.
+drop function if exists public.link_telegram_chat(text,text,text);
+create or replace function public.link_telegram_chat(p_email text, p_telegram_chat_id text, p_username text default null)
+returns jsonb
+language plpgsql security definer set search_path=public
+as $$
+declare n integer;
+begin
+  update public.license_registrations
+     set telegram_chat_id=p_telegram_chat_id, updated_at=now()
+   where status='pending'
+     and (lower(coalesce(email,''))=lower(coalesce(p_email,''))
+       or (p_username is not null and lower(coalesce(telegram,'')) in (lower(p_username), lower('@'||p_username))));
+  get diagnostics n=row_count;
+  return jsonb_build_object('linked', n>0, 'updated', n);
+end;
+$$;
+revoke all on function public.link_telegram_chat(text,text,text) from public;
+grant execute on function public.link_telegram_chat(text,text,text) to service_role;
+
+-- Admin request list now reads the actual registration table used by the Extension.
+drop function if exists public.admin_get_license_requests();
+create or replace function public.admin_get_license_requests()
+returns setof public.license_registrations
+language plpgsql security definer set search_path=public
+as $$
+begin
+  if not public.qx_is_admin() then raise exception 'Admin access required'; end if;
+  return query select * from public.license_registrations order by created_at desc;
+end;
+$$;
+revoke all on function public.admin_get_license_requests() from public;
+grant execute on function public.admin_get_license_requests() to authenticated;
+
+-- Explicit name used by the corrected Cloudflare v3 dashboard.
+create or replace function public.admin_get_license_registrations()
+returns setof public.license_registrations
+language plpgsql security definer set search_path=public
+as $$
+begin
+  if not public.qx_is_admin() then raise exception 'Admin access required'; end if;
+  return query select * from public.license_registrations order by created_at desc;
+end;
+$$;
+revoke all on function public.admin_get_license_registrations() from public;
+grant execute on function public.admin_get_license_registrations() to authenticated;
+
+-- Approve an existing registration, create its 1-year/5-device license,
+-- and bind the resulting license back to the registration.
+create or replace function public.admin_approve_license_registration(p_registration_id bigint)
+returns jsonb
+language plpgsql security definer set search_path=public
+as $$
+declare r public.license_registrations; l public.licenses; k text;
+begin
+  if not public.qx_is_admin() then raise exception 'Admin access required'; end if;
+  select * into r from public.license_registrations where id=p_registration_id for update;
+  if not found then raise exception 'Registration not found'; end if;
+  if coalesce(r.status,'pending') <> 'pending' then raise exception 'Registration is already processed'; end if;
+  if coalesce(trim(r.telegram_chat_id),'')='' then raise exception 'Telegram Chat ID is missing. Ask the applicant to start the bot first.'; end if;
+  k := 'QX-'||upper(encode(gen_random_bytes(5),'hex'))||'-'||upper(encode(gen_random_bytes(5),'hex'))||'-'||upper(encode(gen_random_bytes(5),'hex'));
+  insert into public.licenses(license_key,customer_name,customer_email,plan,status,expires_at,max_devices)
+  values(k,coalesce(r.name,''),coalesce(r.email,''),'1-year','active',now()+interval '1 year',5)
+  returning * into l;
+  update public.license_registrations
+     set status='approved',license_id=l.id,approved_at=now(),updated_at=now()
+   where id=r.id;
+  return jsonb_build_object('ok',true,'license',to_jsonb(l),'registration',to_jsonb(r));
+end;
+$$;
+revoke all on function public.admin_approve_license_registration(bigint) from public;
+grant execute on function public.admin_approve_license_registration(bigint) to authenticated;
+
+-- Add approval timestamps if this production table predates the new flow.
+alter table public.license_registrations add column if not exists approved_at timestamptz;
+alter table public.license_registrations add column if not exists rejected_at timestamptz;
+
+create or replace function public.admin_reject_license_registration(p_registration_id bigint)
+returns jsonb language plpgsql security definer set search_path=public as $$
+begin
+  if not public.qx_is_admin() then raise exception 'Admin access required'; end if;
+  update public.license_registrations set status='rejected',rejected_at=now(),updated_at=now()
+   where id=p_registration_id and status='pending';
+  if not found then raise exception 'Pending registration not found'; end if;
+  return jsonb_build_object('ok',true);
+end;
+$$;
+revoke all on function public.admin_reject_license_registration(bigint) from public;
+grant execute on function public.admin_reject_license_registration(bigint) to authenticated;
+
+grant all on public.license_registrations to service_role;
