@@ -1,27 +1,28 @@
-/* QX Admin mobile polish — presentation only; no data/API logic changed. */
-@media (max-width: 799px){
-  body{overflow-x:hidden}
-  .app{min-height:100dvh}
-  .side{position:sticky;top:0;display:flex;align-items:center;gap:8px;padding:10px 12px;overflow-x:auto;white-space:nowrap;border-bottom:1px solid var(--line);backdrop-filter:blur(16px)}
-  .side h2{margin:0 8px 0 0;font-size:16px;flex:0 0 auto}
-  .nav{display:flex;gap:6px;overflow:visible;flex:0 0 auto}
-  .nav .btn,.side>.btn{width:auto!important;margin:0!important;display:inline-flex!important;align-items:center;justify-content:center;min-height:40px;padding:9px 11px}
-  .side>.btn:last-child{display:none!important}
-  .main{padding:12px 10px 28px;max-width:100%}
-  .top{position:sticky;top:62px;z-index:10;padding:8px 0 10px;background:linear-gradient(var(--bg) 80%,transparent);backdrop-filter:blur(8px)}
-  .top h1{font-size:22px;margin-bottom:2px}
-  .grid{grid-template-columns:1fr 1fr!important;gap:9px}
-  .card{padding:13px;border-radius:15px}
-  .value{font-size:22px}
-  .panel{padding:12px;margin-top:10px;border-radius:15px}
-  .actions{gap:6px}
-  .actions .btn{min-height:40px}
-  .tablewrap{margin:0 -4px;padding:0 4px;border-radius:12px;-webkit-overflow-scrolling:touch}
-  table{min-width:720px;font-size:12px}
-  th,td{padding:9px 8px}
-  .modal{align-items:end;padding:0}
-  .modal>div{width:100%;max-width:none;max-height:86dvh;border-radius:20px 20px 0 0;padding:18px 16px calc(18px + env(safe-area-inset-bottom));animation:qxSheet .22s ease-out}
-  input,select{font-size:16px;min-height:44px}
-  .btn,.primary{min-height:42px}
+/* QX Admin mobile app-style navigation — presentation only; no data/API logic changed. */
+@media (max-width:799px){
+ body{overflow-x:hidden;padding-bottom:74px}
+ .app{min-height:100dvh}
+ .side{position:fixed!important;left:0;right:0;bottom:0;top:auto!important;height:auto;z-index:90;display:flex;align-items:center;gap:8px;padding:9px 10px calc(9px + env(safe-area-inset-bottom));overflow-x:auto;overflow-y:hidden;white-space:nowrap;background:rgba(4,17,31,.94);border-top:1px solid var(--line);border-bottom:0;backdrop-filter:blur(18px);box-shadow:0 -12px 35px #0008;scroll-snap-type:x proximity;-webkit-overflow-scrolling:touch}
+ .side h2{margin:0 6px 0 0;font-size:13px;flex:0 0 auto;color:var(--blue)}
+ .nav{display:flex!important;gap:7px;overflow:visible!important;flex:0 0 auto}
+ .nav .btn,.side>.btn{width:auto!important;margin:0!important;display:inline-flex!important;align-items:center;justify-content:center;min-height:46px;padding:8px 12px;border-radius:14px;flex:0 0 auto;scroll-snap-align:start;font-size:12px}
+ .side>.btn:last-child{display:none!important}
+ .main{padding:12px 10px 22px;max-width:100%}
+ .top{position:sticky;top:0;z-index:10;padding:7px 0 10px;background:linear-gradient(var(--bg) 82%,transparent);backdrop-filter:blur(8px)}
+ .top h1{font-size:22px;margin-bottom:2px}
+ .grid{grid-template-columns:1fr 1fr!important;gap:9px}
+ .card{padding:13px;border-radius:15px}
+ .value{font-size:22px}
+ .panel{padding:12px;margin-top:10px;border-radius:15px}
+ .actions{gap:6px}
+ .actions .btn{min-height:42px}
+ .tablewrap{margin:0 -4px;padding:0 4px;border-radius:12px;overflow-x:auto;-webkit-overflow-scrolling:touch}
+ table{min-width:720px;font-size:12px}
+ th,td{padding:9px 8px}
+ .modal{align-items:end;padding:0}
+ .modal>div{width:100%;max-width:none;max-height:86dvh;border-radius:20px 20px 0 0;padding:18px 16px calc(18px + env(safe-area-inset-bottom));animation:qxSheet .22s ease-out}
+ input,select{font-size:16px;min-height:44px}
+ .btn,.primary{min-height:42px}
 }
+@media (min-width:800px){.side{position:sticky!important}}
 @keyframes qxSheet{from{transform:translateY(18px);opacity:.5}to{transform:none;opacity:1}}
