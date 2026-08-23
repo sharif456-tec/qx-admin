@@ -1,7 +1,11 @@
+# QX Admin security headers
 /*
-  Cloudflare Pages security headers
-  Supabase publishable key is intentionally browser-visible; enforce access with Supabase RLS/RPC.
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
+  Link: </mobile.css>; rel="stylesheet"
 */
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: camera=(), microphone=(), geolocation=()
+  Link: </mobile.css>; rel="stylesheet"
